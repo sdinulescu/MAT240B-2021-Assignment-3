@@ -144,7 +144,7 @@ struct MyApp : App {
       // - root-mean-squared
       // - zero-crossing rate
 
-      Grain grain;
+      Grain grain; // one grain = 2048 samples of audio
 
       std::vector<double> clip(clipSize, 0.0);
       for (int i = 0; i < clip.size(); i++) {
@@ -167,11 +167,37 @@ struct MyApp : App {
 
       // XXX here is where you might compute the spectral centroid
       //
+      float spectral_centroid = 0.0; // = weighted mean of frequencies present in the signal
+                                     // determined using a Fourier transform, with magnitudes used as weights
+                                     // reference: https://en.wikipedia.org/wiki/Spectral_centroid
+      float accum_denominator = 0.0; // sum of weighted frequency
+      float accum_numerator = 0.0; // sum of weighted frequency * center frequency
+      for (int i = 0; i < data.size() / 2; i++) { // for loop is the summation from n = 0 to n = N - 1. N is data.size() / 2.
+        float cf = 1.0 * SAMPLE_RATE * i / data.size(); // center frequency of the bin
+        float magnitude = abs(data[i]) / (clip.size() / 2); // weight (magnitude)
 
+        accum_denominator += magnitude;
+        accum_numerator += (cf * magnitude);
+      }
+      spectral_centroid = accum_numerator / accum_denominator; // calculate
+      grain.centroid = spectral_centroid; // set spectral centroid attribute
+
+      // rms amplitude calculation
+      float rms = 0.0;
+      for (int i = 0; i < data.size(); i++) { // taking all amplitudes here
+        rms += std::pow(abs(data[i]) / (clip.size() / 2), 2); // take each amplitude val, square it, and sum across bins
+      }
+      rms = std::sqrt(rms / data.size()); 
+      grain.rms = rms;
+
+      // peak to peak calculation, as well as general peak calculation
       std::vector<Peak> peak;
+      float trough = abs(data[0]) / (clip.size() / 2); // initialize with first peak amplitude value
       for (int i = 1; i < data.size() / 2; i++) {
+        float amp = abs(data[i]) / (clip.size() / 2); 
+        if (amp < trough) { trough = amp; } // find the lowest amplitude value
+
         // only accept maxima
-        //
         if (abs(data[i - 1]) < abs(data[i]))
           if (abs(data[i + 1]) < abs(data[i]))
             peak.push_back({abs(data[i]) / (clip.size() / 2),
@@ -183,6 +209,7 @@ struct MyApp : App {
       });
 
       peak.resize(10);  // throw away the extras
+      grain.peakToPeak = peak[0].magnitude - trough; 
 
       // XXX here's where you might estimate f0
 
