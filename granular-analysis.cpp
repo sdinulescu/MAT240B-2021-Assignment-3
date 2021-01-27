@@ -111,10 +111,10 @@ int main(int argc, char* argv[]) {
   printf("input size is %ld\n", input.size());
   fflush(stdout);
 
-  // this is how to get a command line argument
-  if (argc > 2) {
-    int N = std::stoi(argv[2]);
-  }
+  // // this is how to get a command line argument
+  // if (argc > 2) {
+  //   int N = std::stoi(argv[2]);
+  // }
 
   int clipSize = 2048;
   int hopSize = 1024;
@@ -140,6 +140,7 @@ int main(int argc, char* argv[]) {
       if (clip[i] == 0.0) { zcr += 1.0; }
     }
     zcr = zcr / clip.size();
+    std::cout << "zcr: " << zcr << std::endl;
     grain.zcr = zcr;
 
     CArray data;
@@ -154,6 +155,7 @@ int main(int argc, char* argv[]) {
     // XXX the size of data really must be a power of two!
     //
     fft(data);
+    //std::cout << "fft done" << std::endl;
 
     // XXX here is where you might compute the spectral centroid
     //
@@ -170,15 +172,16 @@ int main(int argc, char* argv[]) {
       accum_numerator += (cf * magnitude);
     }
     spectral_centroid = accum_numerator / accum_denominator; // calculate
+    std::cout << "sc: " << spectral_centroid << std::endl;
     grain.centroid = spectral_centroid; // set spectral centroid attribute
 
     // rms amplitude calculation
     float rms = 0.0;
-    float zcr = 0.0;
     for (int i = 0; i < data.size(); i++) { // taking all amplitudes here
       rms += std::pow(abs(data[i]) / (clip.size() / 2), 2); // take each amplitude val, square it, and sum across bins
     }
     rms = std::sqrt(rms / data.size()); 
+    std::cout << "rms: " << rms << std::endl;
     grain.rms = rms;
 
     // peak to peak calculation, as well as general peak calculation
@@ -200,12 +203,38 @@ int main(int argc, char* argv[]) {
     });
 
     peak.resize(10);  // throw away the extras
-    grain.peakToPeak = peak[0].magnitude - trough; 
+    float ptp = peak[0].magnitude - trough;
+    std::cout << "ptp: " << ptp << std::endl;
+    grain.peakToPeak = ptp; 
 
     // XXX here's where you might estimate f0
-    
+    std::vector<float> differences;
+    std::vector<int> frequencies; 
+    for (int i = 0; i < peak.size(); i++) { // for the 10 biggest peaks
+      // compute the differences between all frequency values
+      for (int j = i; j < peak.size(); j++) {
+        float diff = 0.0;
+        diff = abs(peak[i].frequency - peak[j].frequency);
+        // if the difference value has not yet been added to our vector, push it back. else, update the frequency.
+        if (differences.size() == 0) {differences.push_back(diff); frequencies.push_back(1); } 
+        else {
+          for (int k = 0; k < differences.size(); k++) {
+            if (differences[k] == diff) { frequencies[k] = frequencies[k] + 1; }
+            else { differences.push_back(diff); frequencies.push_back(1); }
+          }
+        }
+      }
+    }
+    // find the most common difference
+    int index = 0;
+    for (int i = 0; i < differences.size() - 1; i++) {
+      //get the biggest frequency
+      if (differences[i + 1] > differences[i]) { index = i + 1; }
+    }
+    std::cout << "f0: " << frequencies[index] << std::endl;
+    grain.f0 = frequencies[index];
   }
-
+  
   for (int i = 0; i < grain.size() ; i++) {
     std::cout << grain[i].peakToPeak << ", " 
               << grain[i].rms << ", " 
