@@ -117,7 +117,9 @@ struct MyApp : App {
   ControlGUI gui;
 
   std::vector<float> input;
-  std::vector<Grain> grain;
+  std::vector<Grain> grains;
+  std::vector<float> playback;
+
 
   MyApp(int argc, char *argv[]) {
     if (argc < 2) {
@@ -149,8 +151,19 @@ struct MyApp : App {
       std::vector<double> clip(clipSize, 0.0);
       for (int i = 0; i < clip.size(); i++) {
         //          input      *       Hann window
-        clip[i] = input[n + i] * (1 - cos(2 * M_PI * i / clip.size())) / 2;
+        double d_ = input[n + i] * (1 - cos(2 * M_PI * i / clip.size())) / 2;
+        clip[i] = d_;
+        playback.push_back(d_);
       }
+
+      // before zero-padding for fft, let's calculate zero crossing rate of the signal (otherwise, value would be off from the zero padding)
+      float zcr = 0.0;
+      for (int i = 0; i < clip.size(); i++) {
+        if (clip[i] == 0.0) { zcr += 1.0; }
+      }
+      zcr = zcr / clip.size();
+      //std::cout << "zcr: " << zcr << std::endl;
+      grain.zcr = zcr;
 
       CArray data;
       data.resize(fftSize);
@@ -164,12 +177,13 @@ struct MyApp : App {
       // XXX the size of data really must be a power of two!
       //
       fft(data);
+      //std::cout << "fft done" << std::endl;
 
       // XXX here is where you might compute the spectral centroid
       //
       float spectral_centroid = 0.0; // = weighted mean of frequencies present in the signal
-                                     // determined using a Fourier transform, with magnitudes used as weights
-                                     // reference: https://en.wikipedia.org/wiki/Spectral_centroid
+                                      // determined using a Fourier transform, with magnitudes used as weights
+                                      // reference: https://en.wikipedia.org/wiki/Spectral_centroid
       float accum_denominator = 0.0; // sum of weighted frequency
       float accum_numerator = 0.0; // sum of weighted frequency * center frequency
       for (int i = 0; i < data.size() / 2; i++) { // for loop is the summation from n = 0 to n = N - 1. N is data.size() / 2.
@@ -180,6 +194,7 @@ struct MyApp : App {
         accum_numerator += (cf * magnitude);
       }
       spectral_centroid = accum_numerator / accum_denominator; // calculate
+      //std::cout << "sc: " << spectral_centroid << std::endl;
       grain.centroid = spectral_centroid; // set spectral centroid attribute
 
       // rms amplitude calculation
@@ -188,6 +203,7 @@ struct MyApp : App {
         rms += std::pow(abs(data[i]) / (clip.size() / 2), 2); // take each amplitude val, square it, and sum across bins
       }
       rms = std::sqrt(rms / data.size()); 
+      //std::cout << "rms: " << rms << std::endl;
       grain.rms = rms;
 
       // peak to peak calculation, as well as general peak calculation
@@ -209,11 +225,52 @@ struct MyApp : App {
       });
 
       peak.resize(10);  // throw away the extras
-      grain.peakToPeak = peak[0].magnitude - trough; 
+      float ptp = peak[0].magnitude - trough;
+      //std::cout << "ptp: " << ptp << std::endl;
+      grain.peakToPeak = ptp; 
 
       // XXX here's where you might estimate f0
+      std::vector<float> differences;
+      std::vector<int> frequencies; 
+      for (int i = 0; i < peak.size(); i++) { // for the 10 biggest peaks
+        // compute the differences between all frequency values
+        for (int j = i; j < peak.size(); j++) {
+          float diff = 0.0;
+          diff = abs(peak[i].frequency - peak[j].frequency);
+          if (differences.size() == 0) {
+            differences.push_back(diff); frequencies.push_back(1);
+          } else {
+            auto iterator = std::find(differences.begin(), differences.end(), diff);
+            if ( iterator != differences.end() ) { // difference value found in the vector
+              int index = iterator - differences.begin();
+              frequencies[index]++;
+            } else { differences.push_back(diff); frequencies.push_back(1); }
+          }
+          // if the difference value has not yet been added to our vector, push it back. else, update the frequency.
+          // if (differences.size() == 0) { differences.push_back(diff); frequencies.push_back(1); } 
+          // else {
+          //   for (int k = 0; k < differences.size(); k++) {
+          //     if (differences[k] == diff) { frequencies[k] = frequencies[k] + 1; }
+          //     else { differences.push_back(diff); frequencies.push_back(1); }
+          //   }
+          // }
+        }
+      }
+      // std::cout << "differences found: ";
+      // for (int i = 0; i < differences.size(); i++) {
+      //   std::cout << differences[i] << ", ";
+      // }
+      // std::cout << std::endl;
+      // find the most common difference
+      int index = 0;
+      for (int i = 0; i < frequencies.size() - 1; i++) {
+        //get the biggest frequency
+        if (frequencies[i + 1] > frequencies[i]) { index = i + 1; }
+      }
+      //std::cout << "index = " << index << " f0 = " << differences[index] << std::endl;
+      grain.f0 = differences[index];
 
-      this->grain.emplace_back(grain);
+      grains.push_back(grain);
     }
   }
 
@@ -233,30 +290,75 @@ struct MyApp : App {
     gui.draw(g);
   }
 
+  int callback_index = 0;
   void onSound(AudioIOData &io) override {
     while (io()) {
       float f = 0;
 
       // XXX
       // f += ?
-      //
+      if (!playback.empty()) { f+= playback[callback_index]; }
 
-      f *= dbtoa(db.get());
+      if (f > 0.5) { f = 0.5; }
+
+      //f *= dbtoa(db.get());
       io.out(0) = f;
       io.out(1) = f;
+
+      if (callback_index < playback.size()) { callback_index++; } //sound loop index
     }
+  }
+  
+  // read-only, won't overwrite
+  // bool compareP2P(Grain const& i, Grain const& j) { return i.peakToPeak > j.peakToPeak; }
+  // bool compareRMS(Grain const& i, Grain const& j) { return i.rms > j.rms; }
+  // bool compareZCR(Grain const& i, Grain const& j) { return i.zcr > j.zcr; }
+  // bool compareSC(Grain const& i, Grain const& j) { return i.centroid > j.centroid; }
+  // bool compareF0(Grain const& i, Grain const& j) { return i.f0 > j.f0; }
+
+  void arrangeGrains(std::vector<Grain> const& g, char* const& s) {
+    callback_index = 0;
+    //push back the specified grain's feature into a vector. this will be used to resynthesize the sound for playback.
+    for (int i = 0; i < g.size(); i++) {
+      playback.clear();
+      if (strcmp(s, "p2p")) { playback[i] = g[i].peakToPeak; }
+      else if (strcmp(s, "rms")) { playback[i] = g[i].rms; }
+      else if (strcmp(s, "zcr")) { playback[i] = g[i].zcr; }
+      else if (strcmp(s, "centroid")) { playback[i] = g[i].centroid; }
+      else if (strcmp(s, "f0")) { playback[i] = g[i].f0; }
+    }
+    std::sort(playback.begin(), playback.end()); // sort the values
+    // for (int i = 0; i < playback.size(); i++) {
+    //   std::cout << playback[i] << std::endl;
+    // }
   }
 
   bool onKeyDown(const Keyboard &k) override {
     int midiNote = asciiToMIDI(k.key());
-
-    // respond to user action to re-order the grains
-    //
+    
+     
     return true;
   }
 
   bool onKeyUp(const Keyboard &k) override {
     int midiNote = asciiToMIDI(k.key());
+
+
+    // respond to user action to re-order the grains
+    if (k.key() == '1') { // peak-to-peak
+      arrangeGrains(grains, "p2p");
+    } else if (k.key() == '2') { // rms
+      arrangeGrains(grains, "rms");  
+    } else if (k.key() == '3') { // zcr
+      arrangeGrains(grains, "zcr");
+    } else if (k.key() == '4') { // spectral centroid
+      arrangeGrains(grains, "centroid");
+    } else if (k.key() == '5') { // f0
+      arrangeGrains(grains, "f0");
+    } else if (k.key() == ' ') {
+      callback_index = 0;
+    }
+
     return true;
   }
 };
