@@ -27,6 +27,7 @@ typedef std::valarray<Complex> CArray;
 
 const int BLOCK_SIZE = 512;
 const int SAMPLE_RATE = 48000;
+const int CLIP_SIZE = 2048;
 
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
@@ -105,6 +106,13 @@ struct Grain {
   // add more features?
 };
 
+// read-only, won't overwrite
+bool compareP2P(Grain const& i, Grain const& j) { return i.peakToPeak > j.peakToPeak; }
+bool compareRMS(Grain const& i, Grain const& j) { return i.rms > j.rms; }
+bool compareZCR(Grain const& i, Grain const& j) { return i.zcr > j.zcr; }
+bool compareSC(Grain const& i, Grain const& j) { return i.centroid > j.centroid; }
+bool compareF0(Grain const& i, Grain const& j) { return i.f0 > j.f0; }
+
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
@@ -136,19 +144,19 @@ struct MyApp : App {
       int N = std::stoi(argv[2]);
     }
 
-    int clipSize = 2048;
-    int hopSize = 1024;
+    int hopSize = CLIP_SIZE/2; // 1024. 50% overlap.
     int fftSize = 8192;
 
-    for (int n = 0; n < input.size() - clipSize; n += hopSize) {
+    for (int n = 0; n < input.size() - CLIP_SIZE; n += hopSize) {
       // XXX build a grain; add it to the vector of grains
       // - peak-to-peak amplitude
       // - root-mean-squared
       // - zero-crossing rate
 
       Grain grain; // one grain = 2048 samples of audio
+      grain.begin = n; grain.end = n + hopSize;
 
-      std::vector<double> clip(clipSize, 0.0);
+      std::vector<double> clip(CLIP_SIZE, 0.0);
       for (int i = 0; i < clip.size(); i++) {
         //          input      *       Hann window
         double d_ = input[n + i] * (1 - cos(2 * M_PI * i / clip.size())) / 2;
@@ -300,37 +308,52 @@ struct MyApp : App {
       if (!playback.empty()) { f+= playback[callback_index]; }
 
       if (f > 0.5) { f = 0.5; }
+      if (f < 0.1) { f = 0.1;}
 
       //f *= dbtoa(db.get());
       io.out(0) = f;
       io.out(1) = f;
 
       if (callback_index < playback.size()) { callback_index++; } //sound loop index
+      else { callback_index = 0; }
     }
   }
   
-  // read-only, won't overwrite
-  // bool compareP2P(Grain const& i, Grain const& j) { return i.peakToPeak > j.peakToPeak; }
-  // bool compareRMS(Grain const& i, Grain const& j) { return i.rms > j.rms; }
-  // bool compareZCR(Grain const& i, Grain const& j) { return i.zcr > j.zcr; }
-  // bool compareSC(Grain const& i, Grain const& j) { return i.centroid > j.centroid; }
-  // bool compareF0(Grain const& i, Grain const& j) { return i.f0 > j.f0; }
-
-  void arrangeGrains(std::vector<Grain> const& g, char* const& s) {
+  void arrangeGrains(std::vector<Grain>& g, std::string s) {
     callback_index = 0;
     //push back the specified grain's feature into a vector. this will be used to resynthesize the sound for playback.
-    for (int i = 0; i < g.size(); i++) {
-      playback.clear();
-      if (strcmp(s, "p2p")) { playback[i] = g[i].peakToPeak; }
-      else if (strcmp(s, "rms")) { playback[i] = g[i].rms; }
-      else if (strcmp(s, "zcr")) { playback[i] = g[i].zcr; }
-      else if (strcmp(s, "centroid")) { playback[i] = g[i].centroid; }
-      else if (strcmp(s, "f0")) { playback[i] = g[i].f0; }
+    //std::cout << "g size = " << g.size() << std::endl;
+    if (s == "p2p") { 
+      // std::cout << "p2p" << std::endl;
+      std::sort(g.begin(), g.end(), compareP2P);
     }
-    std::sort(playback.begin(), playback.end()); // sort the values
+    if (s == "rms") { 
+      // std::cout << "rms" << std::endl;
+      std::sort(g.begin(), g.end(), compareRMS);
+    }
+    if (s == "zcr") { 
+      // std::cout << "zcr" << std::endl;
+      std::sort(g.begin(), g.end(), compareZCR);
+    } 
+    if (s == "centroid") { 
+      // std::cout << "centroid" << std::endl;
+      std::sort(g.begin(), g.end(), compareSC);
+    }
+    if (s == "f0") { 
+      // std::cout << "f0" << std::endl;
+      std::sort(g.begin(), g.end(), compareF0);
+    }
+    for (int i = 0; i < g.size(); i++) {
+      for (int j = g[i].begin; j < g[i].end; j++) {
+        playback[j] = input[j]; 
+        //* (1 - cos(2 * M_PI * i / CLIP_SIZE)) / 2; // input * Hann window
+      }
+    }
+
     // for (int i = 0; i < playback.size(); i++) {
-    //   std::cout << playback[i] << std::endl;
+    //   std::cout << playback[i] << ", ";
     // }
+    // std::cout << std::endl;
   }
 
   bool onKeyDown(const Keyboard &k) override {
@@ -343,20 +366,29 @@ struct MyApp : App {
   bool onKeyUp(const Keyboard &k) override {
     int midiNote = asciiToMIDI(k.key());
 
-
     // respond to user action to re-order the grains
     if (k.key() == '1') { // peak-to-peak
+      std::cout << "p2p" << std::endl;
       arrangeGrains(grains, "p2p");
-    } else if (k.key() == '2') { // rms
+    }
+    if (k.key() == '2') { // rms
+      std::cout << "rms" << std::endl;
       arrangeGrains(grains, "rms");  
-    } else if (k.key() == '3') { // zcr
+    } 
+    if (k.key() == '3') { // zcr
+      std::cout << "zcr" << std::endl;
       arrangeGrains(grains, "zcr");
-    } else if (k.key() == '4') { // spectral centroid
+    }
+    if (k.key() == '4') { // spectral centroid
+      std::cout << "centroid" << std::endl;
       arrangeGrains(grains, "centroid");
-    } else if (k.key() == '5') { // f0
+    } 
+    if (k.key() == '5') { // f0
+      std::cout << "f0" << std::endl;
       arrangeGrains(grains, "f0");
-    } else if (k.key() == ' ') {
-      callback_index = 0;
+    } 
+    if (k.key() == ' ') { 
+       callback_index = 0;
     }
 
     return true;
